@@ -1,0 +1,96 @@
+name: Claude Issue Triage
+
+on:
+  issues:
+    types: [opened, edited]
+
+concurrency:
+  group: issue-triage-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  triage:
+    if: github.event.issue.pull_request == null && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude Issue Triage
+        id: claude-triage
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: '--allowed-tools "Bash(gh issue view:*),Bash(gh issue edit:*),Bash(gh issue comment:*),Bash(gh label list:*),Read,Grep,Glob"'
+          prompt: |
+            Eres un triager técnico para este repositorio: un Tetris en JavaScript vanilla,
+            sin build ni dependencias. Tres archivos: `game.js` (toda la lógica, single
+            script en global scope), `index.html`, `style.css`. Los textos de interfaz son
+            en español; responde siempre en español.
+
+            El issue a analizar es el número ${{ github.event.issue.number }} de este
+            repositorio (${{ github.repository }}).
+
+            Pasos:
+
+            1. Lee el issue completo con `gh issue view ${{ github.event.issue.number }} --json title,body,labels,comments`.
+            2. Antes de opinar, lee el código relevante con Read/Grep. `game.js` es el
+               núcleo: el loop (`requestAnimationFrame(loop)`), `collide`, `tryRotate`,
+               `rotateCW`, `clearLines`, `lockPiece`, `merge`, `spawn`, `endGame`, y el
+               estado en `let` a nivel de módulo (`board`, `current`, `next`, `score`,
+               `lines`, `level`, `paused`, `gameOver`, `dropInterval`, `dropAccum`,
+               `animId`). Localiza funciones y líneas concretas relacionadas con lo que
+               describe el issue.
+
+            3. Etiqueta el issue. Usa EXCLUSIVAMENTE estas 9 labels ya existentes en el
+               repo, nunca crees labels nuevas:
+               bug, documentation, duplicate, enhancement, good first issue, help wanted,
+               invalid, question, wontfix.
+               Elige como máximo 3 que apliquen (normalmente 1). Si el issue no encaja
+               claramente en ninguna, usa `question`. Aplica con:
+               `gh issue edit ${{ github.event.issue.number }} --add-label "nombre"`
+               (una invocación por label, o separadas por coma en la misma).
+               No quites labels que ya estén puestas salvo que sean claramente incorrectas.
+
+            4. Publica un comentario de diagnóstico con
+               `gh issue comment ${{ github.event.issue.number }} --body-file <archivo>`
+               (usa un archivo temporal para evitar problemas de escaping con backticks
+               y saltos de línea). El comentario debe tener esta estructura, en español:
+
+               ## Diagnóstico automático
+
+               **Resumen**: 1-2 frases de qué pide o reporta el issue.
+
+               **Tipo**: bug / mejora / duda / documentación.
+
+               **Zona del código**: archivos y funciones concretas, formato `archivo:línea`.
+
+               **Causa probable** (si es bug) o **Puntos de cambio** (si es mejora):
+               explicación técnica basada en el código que leíste, no genérica.
+
+               **Enfoque de solución propuesto**: pasos concretos y accionables que
+               alguien pueda usar directamente para implementar el fix o la feature.
+
+               **Riesgos / gotchas**: menciona los relevantes de CLAUDE.md si aplican
+               (dimensiones de canvas hardcodeadas en index.html — 300x600 el tablero,
+               120x120 next-canvas — ligadas a COLS/ROWS/BLOCK en game.js; rotación por
+               transpose+reverse sin tabla SRS, con offsets [0,-1,1,-2,2] en tryRotate;
+               `#overlay` compartido entre pausa y game over, `#restart-btn` siempre
+               reinicia vía init(), no reanuda; textos de UI en español).
+
+               **Confianza**: alta / media / baja. Si es baja, indica qué información
+               falta.
+
+               Si el issue es demasiado vago para diagnosticar con estos datos, dilo
+               explícitamente en el comentario y pide la información concreta que falta
+               (pasos de reproducción, navegador, captura, etc.) en vez de inventar una
+               causa.
+
+            5. No hagas nada más: no edites el cuerpo del issue, no abras pull requests,
+               no toques archivos del repositorio, no cierres el issue.
