@@ -61,7 +61,11 @@ jobs:
             4. Publica un comentario de diagnóstico con
                `gh issue comment ${{ github.event.issue.number }} --body-file <archivo>`
                (usa un archivo temporal para evitar problemas de escaping con backticks
-               y saltos de línea). El comentario debe tener esta estructura, en español:
+               y saltos de línea). El contenido de ese archivo debe ser Markdown válido
+               que GitHub pueda renderizar correctamente (encabezados con `##`, negritas
+               con `**texto**`, listas con `-`, bloques de código con triple backtick y
+               `archivo:línea` como código inline con backticks simples). El comentario
+               debe tener esta estructura, en español:
 
                ## Diagnóstico automático
 
