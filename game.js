@@ -13,6 +13,7 @@ const COLORS = [
   '#e57373', // Z - red
   '#90caf9', // J - azul pálido
   '#ffb74d', // L - orange
+  '#f06292', // + - rosa
 ];
 
 const PIECES = [
@@ -24,9 +25,18 @@ const PIECES = [
   [[5,5,0],[0,5,5],[0,0,0]],                  // Z
   [[6,0,0],[6,6,6],[0,0,0]],                  // J
   [[0,0,7],[7,7,7],[0,0,0]],                  // L
+  [[0,8,0],[8,8,8],[0,8,0]],                  // + (rara)
 ];
 
+// Peso relativo de cada tipo al elegir pieza; índice 0 sin usar.
+// El "+" (índice 8) aparece con mucha menos frecuencia que el resto.
+const PIECE_WEIGHTS = [0, 10, 10, 10, 10, 10, 10, 10, 1.5];
+
 const LINE_SCORES = [0, 100, 300, 500, 800];
+
+const POWERUP_MIN_INTERVAL = 12000; // ms
+const POWERUP_MAX_INTERVAL = 20000; // ms
+const BOMB_FUSE_TIME = 4000; // ms hasta explotar
 
 const canvas = document.getElementById('board');
 const ctx = canvas.getContext('2d');
@@ -41,6 +51,7 @@ const overlayScore = document.getElementById('overlay-score');
 const restartBtn = document.getElementById('restart-btn');
 const themeToggle = document.getElementById('theme-toggle');
 
+let bombs, powerupAccum, powerupInterval;
 const GRID_COLORS = { dark: '#22222e', light: '#d8d8e2' };
 const HIGHLIGHT_COLORS = { dark: 'rgba(255,255,255,0.12)', light: 'rgba(0,0,0,0.08)' };
 
@@ -50,8 +61,18 @@ function createBoard() {
   return Array.from({ length: ROWS }, () => new Array(COLS).fill(0));
 }
 
+function randomPieceType() {
+  const total = PIECE_WEIGHTS.reduce((sum, w) => sum + w, 0);
+  let r = Math.random() * total;
+  for (let type = 1; type < PIECE_WEIGHTS.length; type++) {
+    r -= PIECE_WEIGHTS[type];
+    if (r < 0) return type;
+  }
+  return PIECE_WEIGHTS.length - 1;
+}
+
 function randomPiece() {
-  const type = Math.floor(Math.random() * 7) + 1;
+  const type = randomPieceType();
   const shape = PIECES[type].map(row => [...row]);
   return { type, shape, x: Math.floor(COLS / 2) - Math.floor(shape[0].length / 2), y: 0 };
 }
@@ -103,6 +124,10 @@ function clearLines() {
     if (board[r].every(v => v !== 0)) {
       board.splice(r, 1);
       board.unshift(new Array(COLS).fill(0));
+      for (let i = bombs.length - 1; i >= 0; i--) {
+        if (bombs[i].y === r) bombs.splice(i, 1);
+        else if (bombs[i].y < r) bombs[i].y++;
+      }
       cleared++;
       r++;
     }
@@ -113,6 +138,41 @@ function clearLines() {
     level = Math.floor(lines / 10) + 1;
     dropInterval = Math.max(100, 1000 - (level - 1) * 90);
     updateHUD();
+  }
+}
+
+function randomPowerupInterval() {
+  return POWERUP_MIN_INTERVAL + Math.random() * (POWERUP_MAX_INTERVAL - POWERUP_MIN_INTERVAL);
+}
+
+function trySpawnBomb() {
+  const candidates = [];
+  for (let r = 0; r < ROWS; r++)
+    for (let c = 0; c < COLS; c++)
+      if (board[r][c] && !bombs.some(b => b.x === c && b.y === r))
+        candidates.push({ r, c });
+  if (!candidates.length) return;
+  const { r, c } = candidates[Math.floor(Math.random() * candidates.length)];
+  bombs.push({ x: c, y: r, timer: BOMB_FUSE_TIME });
+}
+
+function explodeBomb(bomb) {
+  for (let dr = -1; dr <= 1; dr++) {
+    for (let dc = -1; dc <= 1; dc++) {
+      const nr = bomb.y + dr;
+      const nc = bomb.x + dc;
+      if (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS) board[nr][nc] = 0;
+    }
+  }
+}
+
+function updateBombs(dt) {
+  for (let i = bombs.length - 1; i >= 0; i--) {
+    bombs[i].timer -= dt;
+    if (bombs[i].timer <= 0) {
+      explodeBomb(bombs[i]);
+      bombs.splice(i, 1);
+    }
   }
 }
 
@@ -189,6 +249,26 @@ function drawGrid() {
   }
 }
 
+function drawBombs() {
+  for (const b of bombs) {
+    const frac = Math.max(0, b.timer / BOMB_FUSE_TIME); // 1 -> 0
+    const cx = b.x * BLOCK + BLOCK / 2;
+    const cy = b.y * BLOCK + BLOCK / 2;
+    const pulseSpeed = 100 + frac * 250; // parpadea más rápido cerca de explotar
+    const pulse = 0.75 + 0.25 * Math.abs(Math.sin(performance.now() / pulseSpeed));
+
+    ctx.beginPath();
+    ctx.arc(cx, cy, (BLOCK / 2 - 2) * pulse, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(15,15,20,0.9)';
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.arc(cx, cy, (BLOCK / 2 - 2) * pulse * 0.55, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(255,${Math.floor(60 + 140 * frac)},0,0.95)`;
+    ctx.fill();
+  }
+}
+
 function draw() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   drawGrid();
@@ -197,6 +277,8 @@ function draw() {
   for (let r = 0; r < ROWS; r++)
     for (let c = 0; c < COLS; c++)
       drawBlock(ctx, c, r, board[r][c], BLOCK);
+
+  drawBombs();
 
   // ghost
   const gy = ghostY();
@@ -245,8 +327,18 @@ function togglePause() {
 }
 
 function loop(ts) {
+  if (paused || gameOver) return;
   const dt = ts - lastTime;
   lastTime = ts;
+
+  powerupAccum += dt;
+  if (powerupAccum >= powerupInterval) {
+    powerupAccum = 0;
+    powerupInterval = randomPowerupInterval();
+    trySpawnBomb();
+  }
+  updateBombs(dt);
+
   dropAccum += dt;
   if (dropAccum >= dropInterval) {
     dropAccum = 0;
@@ -255,6 +347,10 @@ function loop(ts) {
     } else {
       lockPiece();
     }
+  }
+  if (gameOver) {
+    draw();
+    return;
   }
   draw();
   animId = requestAnimationFrame(loop);
@@ -269,6 +365,9 @@ function init() {
   gameOver = false;
   dropInterval = 1000;
   dropAccum = 0;
+  bombs = [];
+  powerupAccum = 0;
+  powerupInterval = randomPowerupInterval();
   lastTime = performance.now();
   next = randomPiece();
   spawn();
